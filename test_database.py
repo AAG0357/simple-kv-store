@@ -27,7 +27,7 @@ class DatabaseTests(unittest.TestCase):
         self.restart()
         self.assertEqual(self.db.get("name"), "second")
         self.assertEqual(len(self.db.entries), 1)
-        self.assertEqual(self.db.get("missing"), "(nil)")
+        self.assertEqual(self.db.get("missing"), "")
 
     def test_delete_and_exists(self):
         self.db.set("key", "value")
@@ -42,7 +42,7 @@ class DatabaseTests(unittest.TestCase):
         self.restart()
         self.assertEqual(
             self.db.mget(["b", "missing", "a"]),
-            ["two", "(nil)", "one"],
+            ["two", "", "one"],
         )
 
     def test_expiration_survives_restart(self):
@@ -57,7 +57,7 @@ class DatabaseTests(unittest.TestCase):
             self.assertEqual(self.db.get("key"), "value")
 
         with patch("database.time.time", return_value=1010):
-            self.assertEqual(self.db.get("key"), "(nil)")
+            self.assertEqual(self.db.get("key"), "")
             self.assertEqual(self.db.ttl("key"), -2)
 
     def test_range_is_sorted_and_inclusive(self):
@@ -114,7 +114,7 @@ class DatabaseTests(unittest.TestCase):
         self.restart()
         self.assertEqual(self.db.hget("student", "major"), "Math")
         self.assertEqual(self.db.hgetall("student"), ["major", "Math"])
-        self.assertEqual(self.db.hget("student", "missing"), "(nil)")
+        self.assertEqual(self.db.hget("student", "missing"), "")
 
     def test_lists_and_negative_indexes(self):
         self.db.push("tasks", "study", True)

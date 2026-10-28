@@ -99,7 +99,7 @@ class Database:
 
     def get(self, key):
         index = self.typed_index(key, "string")
-        return "(nil)" if index == -1 else self.entries[index][1]
+        return "" if index == -1 else self.entries[index][1]
 
     def delete(self, key):
         if self.live_index(key) == -1:
@@ -202,7 +202,7 @@ class Database:
             for pair in self.entries[index][1]:
                 if pair[0] == field:
                     return pair[1]
-        return "(nil)"
+        return ""
 
     def hgetall(self, name):
         index = self.typed_index(name, "hash")
@@ -266,13 +266,13 @@ def execute(database, command, args):
         database.mset(pairs)
         return "OK"
     if command == "MGET" and args:
-        return " ".join(database.mget(args))
+        return "\n".join(database.mget(args))
     if command == "EXPIRE" and len(args) == 2:
         return database.expire(args[0], int(args[1]))
     if command == "TTL" and len(args) == 1:
         return database.ttl(args[0])
     if command == "RANGE" and len(args) == 2:
-        return " ".join(database.range_keys(args[0], args[1]))
+        return "\n".join(database.range_keys(args[0], args[1]) + ["END"])
     if command in ("INCR", "DECR") and len(args) == 1:
         amount = 1 if command == "INCR" else -1
         return database.change_counter(args[0], amount)
@@ -291,7 +291,7 @@ def execute(database, command, args):
     if command in ("LPUSH", "RPUSH") and len(args) == 2:
         return database.push(args[0], args[1], command == "LPUSH")
     if command == "LRANGE" and len(args) == 3:
-        return " ".join(database.lrange(args[0], int(args[1]), int(args[2])))
+        return "\n".join(database.lrange(args[0], int(args[1]), int(args[2])))
     if command == "FLUSHDB" and not args:
         return database.flushdb()
     raise ValueError("Invalid command")
