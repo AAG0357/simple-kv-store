@@ -1,5 +1,6 @@
 """Persistent key-value store using a list-based index."""
 
+import copy
 import json
 import math
 import os
@@ -10,8 +11,10 @@ import time
 class Database:
     def __init__(self, filename="data.db"):
         self.filename = filename
-        # Entries contain a key, value, and optional expiration time.
+        # Entries contain: key, value, expiration timestamp.
         self.entries = []
+        self.snapshot = None
+        self.pending = []
         self.recover()
 
     def find(self, key):
@@ -38,14 +41,14 @@ class Database:
             self.entries[index] = entry
 
     def append_record(self, record):
-        """Persist each write before updating memory."""
+        """Immediately flush a log record to disk."""
         with open(self.filename, "a", encoding="utf-8") as log:
             log.write(json.dumps(record) + "\n")
             log.flush()
             os.fsync(log.fileno())
 
     def apply_record(self, record):
-        # Keep compatibility with our earliest saved records.
+        # Support the records saved by our earlier versions.
         if len(record) == 2:
             self.update_index(record[0], record[1])
         elif record[0] == "SET":
@@ -65,9 +68,12 @@ class Database:
             self.update_index(record[1], record[2])
             index = self.find(record[1])
             self.entries[index][2] = record[3]
+        elif record[0] == "TRANSACTION":
+            for operation in record[1]:
+                self.apply_record(operation)
 
     def recover(self):
-        """Replay the log to rebuild the index."""
+        """Replay the log to rebuild the in-memory index."""
         try:
             with open(self.filename, "r", encoding="utf-8") as log:
                 for line in log:
@@ -75,9 +81,16 @@ class Database:
         except FileNotFoundError:
             pass
 
+    def write(self, record):
+        """Queue transaction writes; persist other writes immediately."""
+        if self.snapshot is not None:
+            self.pending.append(record)
+        else:
+            self.append_record(record)
+        self.apply_record(record)
+
     def set(self, key, value):
-        self.append_record(["SET", key, value])
-        self.update_index(key, value)
+        self.write(["SET", key, value])
 
     def get(self, key):
         index = self.live_index(key)
@@ -86,31 +99,25 @@ class Database:
         return self.entries[index][1]
 
     def delete(self, key):
-        index = self.live_index(key)
-        if index == -1:
+        if self.live_index(key) == -1:
             return 0
-        self.append_record(["DEL", key, None])
-        self.entries.pop(index)
+        self.write(["DEL", key, None])
         return 1
 
     def exists(self, key):
         return int(self.live_index(key) != -1)
 
     def mset(self, pairs):
-        self.append_record(["MSET", pairs, None])
-        for key, value in pairs:
-            self.update_index(key, value)
+        self.write(["MSET", pairs, None])
 
     def mget(self, keys):
         return [self.get(key) for key in keys]
 
     def expire(self, key, seconds):
-        index = self.live_index(key)
-        if index == -1:
+        if self.live_index(key) == -1:
             return 0
         deadline = time.time() + seconds
-        self.append_record(["EXPIRE", key, deadline])
-        self.entries[index][2] = deadline
+        self.write(["EXPIRE", key, deadline])
         return 1
 
     def ttl(self, key):
@@ -123,7 +130,6 @@ class Database:
         return max(0, math.ceil(deadline - time.time()))
 
     def range_keys(self, start, end):
-        """Return live keys in an inclusive alphabetical range."""
         keys = [entry[0] for entry in self.entries]
         result = []
         for key in keys:
@@ -132,7 +138,6 @@ class Database:
         return sorted(result)
 
     def change_counter(self, key, amount):
-        """Change an integer value while preserving its expiration."""
         index = self.live_index(key)
         value = 0
         deadline = None
@@ -145,16 +150,79 @@ class Database:
             deadline = self.entries[index][2]
 
         value += amount
-        record = ["COUNTER", key, str(value), deadline]
-        self.append_record(record)
-        self.apply_record(record)
+        self.write(["COUNTER", key, str(value), deadline])
         return value
+
+    def begin(self):
+        if self.snapshot is not None:
+            raise ValueError("A transaction is already active")
+        self.snapshot = copy.deepcopy(self.entries)
+        self.pending = []
+        return "OK"
+
+    def commit(self):
+        if self.snapshot is None:
+            raise ValueError("No active transaction")
+
+        # Store the entire transaction in one log record.
+        self.append_record(["TRANSACTION", self.pending, None])
+        self.snapshot = None
+        self.pending = []
+        return "OK"
+
+    def abort(self):
+        if self.snapshot is None:
+            raise ValueError("No active transaction")
+        self.entries = self.snapshot
+        self.snapshot = None
+        self.pending = []
+        return "OK"
+
+
+def execute(database, command, args):
+    if command == "SET" and len(args) >= 2:
+        database.set(args[0], " ".join(args[1:]))
+        return "OK"
+    if command == "GET" and len(args) == 1:
+        return database.get(args[0])
+    if command == "DEL" and len(args) == 1:
+        return database.delete(args[0])
+    if command == "EXISTS" and len(args) == 1:
+        return database.exists(args[0])
+    if command == "MSET" and len(args) >= 2 and len(args) % 2 == 0:
+        pairs = []
+        for index in range(0, len(args), 2):
+            pairs.append([args[index], args[index + 1]])
+        database.mset(pairs)
+        return "OK"
+    if command == "MGET" and args:
+        return " ".join(database.mget(args))
+    if command == "EXPIRE" and len(args) == 2:
+        try:
+            seconds = int(args[1])
+        except ValueError:
+            raise ValueError("Seconds must be an integer") from None
+        return database.expire(args[0], seconds)
+    if command == "TTL" and len(args) == 1:
+        return database.ttl(args[0])
+    if command == "RANGE" and len(args) == 2:
+        return " ".join(database.range_keys(args[0], args[1]))
+    if command in ("INCR", "DECR") and len(args) == 1:
+        amount = 1 if command == "INCR" else -1
+        return database.change_counter(args[0], amount)
+    if command == "BEGIN" and not args:
+        return database.begin()
+    if command == "COMMIT" and not args:
+        return database.commit()
+    if command == "ABORT" and not args:
+        return database.abort()
+    raise ValueError("Invalid command")
 
 
 def main():
     database = Database()
 
-    # Print only results so commands can be piped into the program.
+    # No prompts: automated testers read only command results.
     for line in sys.stdin:
         parts = line.strip().split()
         if not parts:
@@ -165,44 +233,17 @@ def main():
 
         if command == "EXIT" and not args:
             break
-        elif command == "SET" and len(args) >= 2:
-            database.set(args[0], " ".join(args[1:]))
-            print("OK", flush=True)
-        elif command == "GET" and len(args) == 1:
-            print(database.get(args[0]), flush=True)
-        elif command == "DEL" and len(args) == 1:
-            print(database.delete(args[0]), flush=True)
-        elif command == "EXISTS" and len(args) == 1:
-            print(database.exists(args[0]), flush=True)
-        elif command == "MSET" and len(args) >= 2 and len(args) % 2 == 0:
-            pairs = []
-            for index in range(0, len(args), 2):
-                pairs.append([args[index], args[index + 1]])
-            database.mset(pairs)
-            print("OK", flush=True)
-        elif command == "MGET" and args:
-            print(" ".join(database.mget(args)), flush=True)
-        elif command == "EXPIRE" and len(args) == 2:
-            try:
-                seconds = int(args[1])
-            except ValueError:
-                print("ERROR: Seconds must be an integer", flush=True)
-                continue
-            print(database.expire(args[0], seconds), flush=True)
-        elif command == "TTL" and len(args) == 1:
-            print(database.ttl(args[0]), flush=True)
-        elif command == "RANGE" and len(args) == 2:
-            print(" ".join(database.range_keys(args[0], args[1])), flush=True)
-        elif command in ("INCR", "DECR") and len(args) == 1:
-            amount = 1 if command == "INCR" else -1
-            try:
-                result = database.change_counter(args[0], amount)
-            except ValueError as error:
-                print(f"ERROR: {error}", flush=True)
-                continue
-            print(result, flush=True)
+
+        try:
+            result = execute(database, command, args)
+        except ValueError as error:
+            print(f"ERROR: {error}", flush=True)
         else:
-            print("ERROR: Invalid command", flush=True)
+            print(result, flush=True)
+
+    # Leaving without COMMIT discards the active transaction.
+    if database.snapshot is not None:
+        database.abort()
 
 
 if __name__ == "__main__":
