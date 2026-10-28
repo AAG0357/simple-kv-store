@@ -1,4 +1,4 @@
-"""Persistent key-value store with a list-based index."""
+"""Persistent key-value store using a list-based index."""
 
 import json
 import math
@@ -10,7 +10,7 @@ import time
 class Database:
     def __init__(self, filename="data.db"):
         self.filename = filename
-        # Each entry contains: key, value, expiration timestamp.
+        # Entries contain a key, value, and optional expiration time.
         self.entries = []
         self.recover()
 
@@ -38,13 +38,14 @@ class Database:
             self.entries[index] = entry
 
     def append_record(self, record):
+        """Persist each write before updating memory."""
         with open(self.filename, "a", encoding="utf-8") as log:
             log.write(json.dumps(record) + "\n")
             log.flush()
             os.fsync(log.fileno())
 
     def apply_record(self, record):
-        # Support SET records from our first version.
+        # Keep compatibility with our earliest saved records.
         if len(record) == 2:
             self.update_index(record[0], record[1])
         elif record[0] == "SET":
@@ -60,8 +61,13 @@ class Database:
             index = self.find(record[1])
             if index != -1:
                 self.entries[index][2] = record[2]
+        elif record[0] == "COUNTER":
+            self.update_index(record[1], record[2])
+            index = self.find(record[1])
+            self.entries[index][2] = record[3]
 
     def recover(self):
+        """Replay the log to rebuild the index."""
         try:
             with open(self.filename, "r", encoding="utf-8") as log:
                 for line in log:
@@ -102,7 +108,6 @@ class Database:
         index = self.live_index(key)
         if index == -1:
             return 0
-        # Store an absolute time so expiration survives restarts.
         deadline = time.time() + seconds
         self.append_record(["EXPIRE", key, deadline])
         self.entries[index][2] = deadline
@@ -117,11 +122,39 @@ class Database:
             return -1
         return max(0, math.ceil(deadline - time.time()))
 
+    def range_keys(self, start, end):
+        """Return live keys in an inclusive alphabetical range."""
+        keys = [entry[0] for entry in self.entries]
+        result = []
+        for key in keys:
+            if self.live_index(key) != -1 and start <= key <= end:
+                result.append(key)
+        return sorted(result)
+
+    def change_counter(self, key, amount):
+        """Change an integer value while preserving its expiration."""
+        index = self.live_index(key)
+        value = 0
+        deadline = None
+
+        if index != -1:
+            try:
+                value = int(self.entries[index][1])
+            except ValueError:
+                raise ValueError("Value must be an integer") from None
+            deadline = self.entries[index][2]
+
+        value += amount
+        record = ["COUNTER", key, str(value), deadline]
+        self.append_record(record)
+        self.apply_record(record)
+        return value
+
 
 def main():
     database = Database()
 
-    # No prompts: automated testers read only command results.
+    # Print only results so commands can be piped into the program.
     for line in sys.stdin:
         parts = line.strip().split()
         if not parts:
@@ -158,6 +191,16 @@ def main():
             print(database.expire(args[0], seconds), flush=True)
         elif command == "TTL" and len(args) == 1:
             print(database.ttl(args[0]), flush=True)
+        elif command == "RANGE" and len(args) == 2:
+            print(" ".join(database.range_keys(args[0], args[1])), flush=True)
+        elif command in ("INCR", "DECR") and len(args) == 1:
+            amount = 1 if command == "INCR" else -1
+            try:
+                result = database.change_counter(args[0], amount)
+            except ValueError as error:
+                print(f"ERROR: {error}", flush=True)
+                continue
+            print(result, flush=True)
         else:
             print("ERROR: Invalid command", flush=True)
 
