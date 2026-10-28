@@ -61,11 +61,13 @@ class DatabaseTests(unittest.TestCase):
             self.assertEqual(self.db.ttl("key"), -2)
 
     def test_range_is_sorted_and_inclusive(self):
-        self.db.mset([
-            ["cherry", "3"],
-            ["apple", "1"],
-            ["banana", "2"],
-        ])
+        self.db.mset(
+            [
+                ["cherry", "3"],
+                ["apple", "1"],
+                ["banana", "2"],
+            ]
+        )
         self.assertEqual(
             self.db.range_keys("apple", "banana"),
             ["apple", "banana"],
@@ -123,8 +125,7 @@ class DatabaseTests(unittest.TestCase):
             self.db.lrange("tasks", 0, -1),
             ["read", "study", "homework"],
         )
-        self.assertEqual(self.db.lrange("tasks", -2, -1),
-                         ["study", "homework"])
+        self.assertEqual(self.db.lrange("tasks", -2, -1), ["study", "homework"])
         self.assertEqual(self.db.lrange("tasks", 5, 10), [])
 
     def test_wrong_type_does_not_modify_data(self):

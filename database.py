@@ -66,9 +66,7 @@ class Database:
         elif record[0] == "COUNTER":
             self.update_index(record[1], record[2], record[3])
         elif record[0] == "VALUE":
-            self.update_index(
-                record[1], record[2], record[3], record[4]
-            )
+            self.update_index(record[1], record[2], record[3], record[4])
         elif record[0] == "TRANSACTION":
             for operation in record[1]:
                 self.apply_record(operation)
@@ -243,7 +241,7 @@ class Database:
         stop = min(length - 1, stop)
         if start > stop:
             return []
-        return values[start:stop + 1]
+        return values[start : stop + 1]
 
     def flushdb(self):
         # A reset record preserves append-only storage.
@@ -293,9 +291,7 @@ def execute(database, command, args):
     if command in ("LPUSH", "RPUSH") and len(args) == 2:
         return database.push(args[0], args[1], command == "LPUSH")
     if command == "LRANGE" and len(args) == 3:
-        return " ".join(
-            database.lrange(args[0], int(args[1]), int(args[2]))
-        )
+        return " ".join(database.lrange(args[0], int(args[1]), int(args[2])))
     if command == "FLUSHDB" and not args:
         return database.flushdb()
     raise ValueError("Invalid command")
