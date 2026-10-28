@@ -40,7 +40,7 @@ class Database:
                 for line in log:
                     record = json.loads(line)
 
-                    # Read SET records from the earlier version.
+                    # Support records saved by the first version.
                     if len(record) == 2:
                         self.update_index(record[0], record[1])
                     elif record[0] == "SET":
@@ -49,6 +49,9 @@ class Database:
                         index = self.find(record[1])
                         if index != -1:
                             self.entries.pop(index)
+                    elif record[0] == "MSET":
+                        for key, value in record[1]:
+                            self.update_index(key, value)
         except FileNotFoundError:
             pass
 
@@ -74,29 +77,59 @@ class Database:
     def exists(self, key):
         return int(self.find(key) != -1)
 
+    def mset(self, pairs):
+        """Save all pairs together in one log record."""
+        self.append_record(["MSET", pairs, None])
+        for key, value in pairs:
+            self.update_index(key, value)
+
+    def mget(self, keys):
+        return [self.get(key) for key in keys]
+
 
 def main():
     database = Database()
 
-    # Read commands without printing prompts for automated testing.
+    # Print only command results for automated testing.
     for line in sys.stdin:
-        parts = line.strip().split(maxsplit=2)
+        parts = line.strip().split()
         if not parts:
             continue
 
         command = parts[0].upper()
+        arguments = parts[1:]
 
-        if command == "EXIT" and len(parts) == 1:
+        if command == "EXIT" and not arguments:
             break
-        elif command == "SET" and len(parts) == 3:
-            database.set(parts[1], parts[2])
+
+        elif command == "SET" and len(arguments) >= 2:
+            database.set(arguments[0], " ".join(arguments[1:]))
             print("OK", flush=True)
-        elif command == "GET" and len(parts) == 2:
-            print(database.get(parts[1]), flush=True)
-        elif command == "DEL" and len(parts) == 2:
-            print(database.delete(parts[1]), flush=True)
-        elif command == "EXISTS" and len(parts) == 2:
-            print(database.exists(parts[1]), flush=True)
+
+        elif command == "GET" and len(arguments) == 1:
+            print(database.get(arguments[0]), flush=True)
+
+        elif command == "DEL" and len(arguments) == 1:
+            print(database.delete(arguments[0]), flush=True)
+
+        elif command == "EXISTS" and len(arguments) == 1:
+            print(database.exists(arguments[0]), flush=True)
+
+        elif (
+            command == "MSET"
+            and len(arguments) >= 2
+            and len(arguments) % 2 == 0
+        ):
+            pairs = []
+            for index in range(0, len(arguments), 2):
+                pairs.append([arguments[index], arguments[index + 1]])
+            database.mset(pairs)
+            print("OK", flush=True)
+
+        elif command == "MGET" and len(arguments) >= 1:
+            values = database.mget(arguments)
+            print(" ".join(values), flush=True)
+
         else:
             print("ERROR: Invalid command", flush=True)
 
