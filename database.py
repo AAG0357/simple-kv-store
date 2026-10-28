@@ -4,6 +4,7 @@ import copy
 import json
 import math
 import os
+import shlex
 import sys
 import time
 
@@ -135,7 +136,11 @@ class Database:
         keys = [entry[0] for entry in self.entries]
         result = []
         for key in keys:
-            if self.live_index(key) != -1 and start <= key <= end:
+            if (
+                self.live_index(key) != -1
+                and (not start or start <= key)
+                and (not end or key <= end)
+            ):
                 result.append(key)
         return sorted(result)
 
@@ -248,6 +253,27 @@ class Database:
         self.write(["FLUSHDB", None, None])
         return "OK"
 
+    def pop(self, key, left):
+        """Remove and return an item while preserving expiration."""
+        index = self.typed_index(key, "list")
+        if index == -1:
+            return ""
+        values = self.entries[index][1].copy()
+        if not values:
+            return ""
+        deadline = self.entries[index][2]
+        value = values.pop(0 if left else -1)
+        if values:
+            self.write(["VALUE", key, values, deadline, "list"])
+        else:
+            self.write(["DEL", key, None])
+        return value
+
+    def llen(self, key):
+        """Return the number of items in a list."""
+        index = self.typed_index(key, "list")
+        return 0 if index == -1 else len(self.entries[index][1])
+
 
 def execute(database, command, args):
     if command == "SET" and len(args) >= 2:
@@ -294,13 +320,21 @@ def execute(database, command, args):
         return "\n".join(database.lrange(args[0], int(args[1]), int(args[2])))
     if command == "FLUSHDB" and not args:
         return database.flushdb()
+    if command in ("LPOP", "RPOP") and len(args) == 1:
+        return database.pop(args[0], command == "LPOP")
+    if command == "LLEN" and len(args) == 1:
+        return database.llen(args[0])
     raise ValueError("Invalid command")
 
 
 def main():
     database = Database()
     for line in sys.stdin:
-        parts = line.strip().split()
+        try:
+            parts = shlex.split(line)
+        except ValueError:
+            print("ERROR: Invalid quoting", flush=True)
+            continue
         if not parts:
             continue
         command = parts[0].upper()
